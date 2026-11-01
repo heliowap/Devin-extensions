@@ -1,0 +1,124 @@
+{
+  "name": "devin-pulse",
+  "displayName": "Devin Pulse",
+  "description": "Local Devin model, prompt timing, token usage and confirmed throughput in your editor.",
+  "version": "0.1.0",
+  "publisher": "heliowap",
+  "license": "MIT",
+  "author": "Helio Pinheiro",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heliowap/Devin-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/heliowap/Devin-extensions/issues"
+  },
+  "homepage": "https://github.com/heliowap/Devin-extensions#readme",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "devin",
+    "metrics",
+    "tokens",
+    "throughput",
+    "status bar"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "devinPulse.open",
+        "title": "Devin Pulse: Abrir painel"
+      },
+      {
+        "command": "devinPulse.selectSession",
+        "title": "Devin Pulse: Selecionar sessão"
+      },
+      {
+        "command": "devinPulse.refresh",
+        "title": "Devin Pulse: Atualizar"
+      },
+      {
+        "command": "devinPulse.autoSession",
+        "title": "Devin Pulse: Acompanhar workspace"
+      }
+    ],
+    "configuration": {
+      "title": "Devin Pulse",
+      "properties": {
+        "devinPulse.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Caminho do banco local de sessões do Devin (somente leitura). Vazio usa o caminho padrão detectado pelo coletor."
+        },
+        "devinPulse.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Executável do Python 3.10+ usado pelo coletor local. No Windows, 'python' é tentado como alternativa quando o padrão não existe."
+        },
+        "devinPulse.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 500,
+          "maximum": 60000,
+          "description": "Intervalo entre coletas locais, em milissegundos."
+        },
+        "devinPulse.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mostrar o resumo da última requisição na barra de status."
+        },
+        "devinPulse.prices": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          },
+          "description": "Preços ESTIMADOS em USD por milhão de tokens, indexados pelo ID exato do modelo (sem correspondência por família). Não há valores padrão: modelos sem preço mostram custo indisponível, não zero. Os valores são definidos por você e podem estar desatualizados."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js && python3 -m unittest discover -s test -p 'test_*.py'",
+    "check": "node --check src/extension.js && node --check src/bridge.js && node --check src/view.js && node --check media/panel.js",
+    "package": "vsce package --no-dependencies --out devin-pulse-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.0"
+  }
+}

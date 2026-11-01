@@ -1,0 +1,17 @@
+.github/**
+.vscode/**
+.vscode-test/**
+docs/**
+test/**
+node_modules/**
+**/__pycache__/**
+**/*.pyc
+**/*.vsix
+**/*.db*
+**/.env*
+**/.DS_Store
+captures/**
+**/*.capture.*
+**/*.map
+package-lock.json
+.gitignore
