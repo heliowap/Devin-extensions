@@ -246,3 +246,170 @@ test('formatting helpers use pt-BR separators and readable durations', () => {
   assert.equal(view.formatDuration(null), '—');
   assert.equal(view.formatCount(1234567), '1.234.567');
 });
+
+function modelEntry(overrides = {}) {
+  return {
+    model: 'model-a',
+    roleCounts: { lead: 2, delegated: 1, unassigned: 0 },
+    billing: { source: 'unknown', basis: 'unknown' },
+    usage: { requests: 3, tokens: tokens({ input: 1200, output: 340, cacheRead: 9000, cacheWrite: 70, total: 10610 }), costUsd: null, pricedRequests: 0 },
+    latestRequest: request({ tps: 100, tpsKind: 'reported' }),
+    requestTps: { value: 12.5, sampleCount: 2, requests: 3 },
+    ...overrides,
+  };
+}
+
+function richSnapshot({ byModel, simulation, model = 'model-a' } = {}) {
+  const data = snapshot({ turns: [turn()] });
+  data.session.model = model;
+  if (byModel !== undefined) {
+    data.session.byModel = byModel;
+  }
+  if (simulation !== undefined) {
+    data.session.simulation = simulation;
+  }
+  return data;
+}
+
+test('session totals are labelled as accumulated volume with every category visible', () => {
+  const html = view.renderPanel({ snapshot: richSnapshot(), mode: 'auto', now: 20000 });
+  assert.match(html, /Volume acumulado de tokens/);
+  assert.match(html, /inclui releituras do contexto em cache; não é texto único nem percentual da cota/);
+  for (const label of ['Entrada', 'Saída gerada (registrada)', 'Cache lido — acumulado por chamada', 'Cache criado']) {
+    assert.match(html, new RegExp(label.replace(/[()]/g, '\\$&')));
+  }
+  assert.equal(/<span class="label">Total<\/span>/.test(html), false);
+});
+
+test('per-model rows are distinct and keep full model identifiers', () => {
+  const long = 'fusion-gpt-6-astra-high-sidekick-swe-2-high-effort-max';
+  const data = richSnapshot({
+    byModel: [
+      modelEntry({ model: long }),
+      modelEntry({ model: 'gpt-6-astra-high', billing: { source: 'chatgpt', basis: 'declared' } }),
+    ],
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  const tableBody = html.split('<tbody>')[1].split('</tbody>')[0];
+  assert.equal((tableBody.match(/<tr>/g) || []).length, 2);
+  assert.match(html, new RegExp(long));
+  assert.match(html, /gpt-6-astra-high/);
+});
+
+test('ChatGPT origin shows the informed subscription route and never a default zero cost', () => {
+  const data = richSnapshot({
+    byModel: [modelEntry({ model: 'gpt-6-astra-high', billing: { source: 'chatgpt', basis: 'declared' } })],
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  assert.match(html, /ChatGPT\/OAuth \(configuração informada\)/);
+  assert.match(html, /Consumo por modelo/);
+  const table = html.split('<table class="models">')[1].split('</table>')[0];
+  assert.equal(table.includes('US$ 0'), false);
+  assert.match(table, /Não configurado \/ indisponível/);
+});
+
+test('unknown or undeclared billing source stays unknown', () => {
+  const data = richSnapshot({
+    byModel: [
+      modelEntry({ model: 'm-unknown', billing: { source: 'unknown', basis: 'unknown' } }),
+      modelEntry({ model: 'm-undeclared', billing: { source: 'chatgpt', basis: 'unknown' } }),
+    ],
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  assert.equal((html.match(/Não informada/g) || []).length, 2);
+  assert.equal(html.includes('ChatGPT/OAuth'), false);
+});
+
+test('per-model request TPS and latest reported TPS stay distinct with coverage', () => {
+  const html = view.renderPanel({ snapshot: richSnapshot({ byModel: [modelEntry()] }), mode: 'auto', now: 20000 });
+  assert.match(html, /TPS por tempo de chamadas \(inclui espera\)/);
+  assert.match(html, /12,5 tok\/s · 2 de 3 requisições/);
+  assert.match(html, /100,0 tok\/s · reportado pelo Devin/);
+});
+
+test('absent simulation baseline shows the configuration prompt without values', () => {
+  const data = richSnapshot({
+    byModel: [modelEntry()],
+    simulation: {
+      baselineModel: null,
+      allRequests: 3,
+      comparedRequests: 0,
+      skippedRequests: 3,
+      actualEquivalentUsd: null,
+      baselineEquivalentUsd: null,
+      differenceUsd: null,
+      differencePercent: null,
+    },
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  assert.match(html, /Configure preços e um modelo de referência para simular\./);
+  assert.equal(html.includes('Diferença simulada'), false);
+});
+
+test('populated simulation shows compared counts and signed differences without clamping', () => {
+  const data = richSnapshot({
+    byModel: [modelEntry()],
+    simulation: {
+      baselineModel: 'reference-model',
+      allRequests: 4,
+      comparedRequests: 3,
+      skippedRequests: 1,
+      actualEquivalentUsd: 4,
+      baselineEquivalentUsd: 3,
+      differenceUsd: -1,
+      differencePercent: -33.3,
+    },
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  assert.match(html, /Requisições comparadas: 3 de 4 \(1 não comparadas: preços ou contadores incompletos\)/);
+  assert.match(html, /Modelos observados \(equivalente API\)/);
+  assert.match(html, /Mesmo volume à tarifa do modelo de referência/);
+  assert.match(html, /Diferença simulada<\/span><span class="value">-US\$ 1,0000 \(-33,3%\)/);
+  assert.match(html, /NÃO mede como a tarefa rodaria sem o Fusion/);
+
+  const positive = view.renderPanel({
+    snapshot: richSnapshot({
+      byModel: [modelEntry()],
+      simulation: { ...data.session.simulation, differenceUsd: 0.5, differencePercent: 25 },
+    }),
+    mode: 'auto',
+    now: 20000,
+  });
+  assert.match(positive, /\+US\$ 0,5000 \(\+25,0%\)/);
+});
+
+test('malicious model and billing text cannot inject markup', () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const data = richSnapshot({
+    model: hostile,
+    byModel: [modelEntry({ model: hostile, billing: { source: '<script>x</script>', basis: 'declared' } })],
+    simulation: {
+      baselineModel: '<script>alert(2)</script>',
+      allRequests: 1,
+      comparedRequests: 1,
+      skippedRequests: 0,
+      actualEquivalentUsd: 1,
+      baselineEquivalentUsd: 1,
+      differenceUsd: 0,
+      differencePercent: 0,
+    },
+  });
+  const html = view.renderPanel({ snapshot: data, mode: 'auto', now: 20000 });
+  assert.equal(/<img/i.test(html), false);
+  assert.equal(/<script/i.test(html), false);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /Não informada/);
+});
+
+test('session configured model is shown in full and labelled as configuration', () => {
+  const longModel = 'fusion-gpt-6-astra-high-sidekick-swe-2-high-effort-max';
+  const html = view.renderPanel({ snapshot: richSnapshot({ model: longModel, byModel: [] }), mode: 'manual', now: 20000 });
+  assert.match(html, new RegExp(longModel));
+  assert.match(html, /configuração, não prova do modelo ativo/);
+});
+
+test('a collector without per-model or simulation fields degrades to unavailable notes', () => {
+  const html = view.renderPanel({ snapshot: snapshot({ turns: [turn()] }), mode: 'auto', now: 20000 });
+  assert.match(html, /Consumo por modelo indisponível nesta versão do coletor\./);
+  assert.match(html, /Simulação indisponível nesta versão do coletor\./);
+});

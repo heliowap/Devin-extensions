@@ -7,6 +7,17 @@ const TOKEN_LABELS = Object.freeze({
   cacheRead: 'Cache lido',
   cacheWrite: 'Cache criado',
 });
+const TOTAL_LABELS = Object.freeze({
+  input: 'Entrada',
+  output: 'Saída gerada (registrada)',
+  cacheRead: 'Cache lido — acumulado por chamada',
+  cacheWrite: 'Cache criado',
+});
+const BILLING_LABELS = Object.freeze({
+  chatgpt: 'ChatGPT/OAuth (configuração informada)',
+  devin: 'Cota/créditos Devin (configuração informada)',
+  api: 'API externa (configuração informada)',
+});
 const TOKEN_KEYS = Object.keys(TOKEN_LABELS);
 const TURN_LIMIT = 50;
 const NO_PRICE = 'Não configurado / indisponível';
@@ -51,12 +62,31 @@ function formatTps(tps) {
   return isFiniteNumber(tps) && tps >= 0 ? `${formatNumber(tps, 1)} tok/s` : DASH;
 }
 
+function formatAmount(value) {
+  return isFiniteNumber(value) && value >= 0 ? `US$ ${formatNumber(value, 4)}` : NO_PRICE;
+}
+
+function formatSignedUsd(value) {
+  if (!isFiniteNumber(value)) {
+    return NO_PRICE;
+  }
+  const sign = value < 0 ? '-' : value > 0 ? '+' : '';
+  return `${sign}US$ ${formatNumber(Math.abs(value), 4)}`;
+}
+
+function formatSignedPercent(value) {
+  if (!isFiniteNumber(value)) {
+    return DASH;
+  }
+  const sign = value < 0 ? '-' : value > 0 ? '+' : '';
+  return `${sign}${formatNumber(Math.abs(value), 1)}%`;
+}
+
 function formatUsd(cost, pricedRequests, requests) {
   const coverage = isFiniteNumber(pricedRequests) && isFiniteNumber(requests) && requests > 0 && pricedRequests < requests
     ? ` (${pricedRequests} de ${requests} requisições com preço)`
     : '';
-  const amount = isFiniteNumber(cost) && cost >= 0 ? `US$ ${formatNumber(cost, 4)}` : NO_PRICE;
-  return amount + coverage;
+  return formatAmount(cost) + coverage;
 }
 
 function formatTime(ms) {
@@ -74,6 +104,18 @@ function shortModel(model) {
   }
   const clean = model.replace(/\$/g, '').trim();
   return clean.length > 24 ? `${clean.slice(0, 23)}…` : clean;
+}
+
+function fullModel(model) {
+  return escapeHtml(typeof model === 'string' && model.trim() !== '' ? model : DASH);
+}
+
+function billingLabel(billing) {
+  const safe = billing && typeof billing === 'object' ? billing : {};
+  if (safe.basis !== 'declared' || !Object.prototype.hasOwnProperty.call(BILLING_LABELS, safe.source)) {
+    return 'Não informada';
+  }
+  return BILLING_LABELS[safe.source];
 }
 
 function usageOf(usage) {
@@ -240,7 +282,7 @@ function renderHeader(mode, snapshot) {
   }
   for (const item of sessions) {
     const selected = item.id === selectedId ? ' selected' : '';
-    const label = `${item.title || '(sem título)'} · ${shortModel(item.model)}`;
+    const label = `${item.title || '(sem título)'} · ${typeof item.model === 'string' ? item.model : DASH}`;
     options.push(`<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(label)}</option>`);
   }
   const select = sessions.length
@@ -280,10 +322,10 @@ function renderCurrentTurn(turn, now) {
   const lastBlock = last
     ? [
         '<dl class="pairs">',
-        `<dt>Modelo</dt><dd>${escapeHtml(shortModel(last.model))} (${scopeLabel(last.scope)})</dd>`,
+        `<dt>Modelo</dt><dd>${fullModel(last.model)} (${scopeLabel(last.scope)})</dd>`,
         `<dt>Latência da requisição</dt><dd>${formatDuration(last.durationMs)}</dd>`,
         `<dt>TTFT</dt><dd>${formatDuration(last.ttftMs)}</dd>`,
-        `<dt>${turn.state === 'open' ? 'TPS da última chamada' : 'TPS'}</dt><dd>${formatTps(last.tps)} · ${tpsBasisLabel(last.tpsKind)}</dd>`,
+        `<dt>TPS da última chamada</dt><dd>${formatTps(last.tps)} · ${tpsBasisLabel(last.tpsKind)}</dd>`,
         '</dl>',
       ].join('')
     : '<p class="empty">Nenhuma requisição concluída neste prompt.</p>';
@@ -293,8 +335,8 @@ function renderCurrentTurn(turn, now) {
     renderTurnStatus(turn, now),
     lastBlock,
     '<div class="split">',
-    `<div><h3>Principal</h3>${tokenRows(lead)}<p class="meta">Custo: ${formatUsd(lead.costUsd, lead.pricedRequests, lead.requests)}</p></div>`,
-    `<div><h3>Delegadas</h3>${tokenRows(delegated)}<p class="meta">Custo: ${formatUsd(delegated.costUsd, delegated.pricedRequests, delegated.requests)}</p></div>`,
+    `<div><h3>Principal</h3>${tokenRows(lead)}<p class="meta">Equivalente de API: ${formatUsd(lead.costUsd, lead.pricedRequests, lead.requests)}</p></div>`,
+    `<div><h3>Delegadas</h3>${tokenRows(delegated)}<p class="meta">Equivalente de API: ${formatUsd(delegated.costUsd, delegated.pricedRequests, delegated.requests)}</p></div>`,
     '</div>',
     '</section>',
   ].join('');
@@ -303,7 +345,7 @@ function renderCurrentTurn(turn, now) {
 function renderTotals(session) {
   const totals = usageOf(session.totals);
   const totalsRows = TOKEN_KEYS.map(
-    (key) => `<div class="metric"><span class="label">${TOKEN_LABELS[key]}</span><span class="value">${formatTokenValue(totals.tokens, key)}</span></div>`,
+    (key) => `<div class="metric"><span class="label">${TOTAL_LABELS[key]}</span><span class="value">${formatTokenValue(totals.tokens, key)}</span></div>`,
   ).join('');
   const unassigned = Number(session.unassignedRequests) > 0
     ? `<p class="meta">${formatCount(session.unassignedRequests)} requisições fora do histórico de prompts exibido; incluídas nos totais da sessão.</p>`
@@ -312,9 +354,94 @@ function renderTotals(session) {
     '<section class="card">',
     '<h2>Totais da sessão</h2>',
     totalsRows,
-    `<div class="metric total"><span class="label">Total</span><span class="value">${formatTokenTotal(totals.tokens)}</span></div>`,
-    `<p class="meta">Requisições: ${formatCount(totals.requests)} · Custo estimado: ${formatUsd(totals.costUsd, totals.pricedRequests, totals.requests)}</p>`,
+    `<div class="metric total"><span class="label">Volume acumulado de tokens</span><span class="value">${formatTokenTotal(totals.tokens)}</span></div>`,
+    '<p class="meta">Volume acumulado de tokens inclui releituras do contexto em cache; não é texto único nem percentual da cota.</p>',
+    '<p class="meta">Saída gerada (registrada) inclui o que a fonte registra como saída, podendo incluir raciocínio além da resposta visível.</p>',
+    `<p class="meta">Requisições: ${formatCount(totals.requests)} · Equivalente de API a preços configurados: ${formatUsd(totals.costUsd, totals.pricedRequests, totals.requests)}</p>`,
     unassigned,
+    '</section>',
+  ].join('');
+}
+
+function renderModelRow(entry) {
+  const usage = usageOf(entry.usage);
+  const roles = entry.roleCounts && typeof entry.roleCounts === 'object' ? entry.roleCounts : {};
+  const latest = entry.latestRequest;
+  const requestTps = entry.requestTps && typeof entry.requestTps === 'object' ? entry.requestTps : {};
+  const tokenCells = TOKEN_KEYS.map((key) => `<td>${formatTokenValue(usage.tokens, key)}</td>`).join('');
+  return [
+    '<tr>',
+    `<td class="model">${fullModel(entry.model)}</td>`,
+    `<td>${escapeHtml(billingLabel(entry.billing))}</td>`,
+    `<td>${formatCount(usage.requests)}</td>`,
+    `<td>Principal ${formatCount(roles.lead)} · Delegada ${formatCount(roles.delegated)} · Fora do histórico ${formatCount(roles.unassigned)}</td>`,
+    tokenCells,
+    `<td>${formatTokenTotal(usage.tokens)}</td>`,
+    `<td>${latest ? `${formatTps(latest.tps)} · ${tpsBasisLabel(latest.tpsKind)}` : DASH}</td>`,
+    `<td>${formatTps(requestTps.value)} · ${formatCount(requestTps.sampleCount)} de ${formatCount(requestTps.requests)} requisições</td>`,
+    `<td>${formatUsd(usage.costUsd, usage.pricedRequests, usage.requests)}</td>`,
+    '</tr>',
+  ].join('');
+}
+
+function renderModels(session) {
+  const entries = Array.isArray(session.byModel) ? session.byModel : null;
+  let body;
+  if (entries === null) {
+    body = '<p class="empty">Consumo por modelo indisponível nesta versão do coletor.</p>';
+  } else if (entries.length === 0) {
+    body = '<p class="empty">Nenhum modelo registrado nesta sessão.</p>';
+  } else {
+    body = [
+      '<div class="scroll"><table class="models">',
+      '<thead><tr><th>Modelo</th><th>Origem de cobrança</th><th>Requisições</th><th>Escopo</th>',
+      `<th>${TOTAL_LABELS.input}</th><th>${TOTAL_LABELS.output}</th><th>${TOTAL_LABELS.cacheRead}</th><th>${TOTAL_LABELS.cacheWrite}</th>`,
+      '<th>Volume acumulado</th><th>Última TPS reportada</th><th>TPS por tempo de chamadas (inclui espera)</th><th>Equivalente de API</th>',
+      '</tr></thead>',
+      `<tbody>${entries.map(renderModelRow).join('')}</tbody>`,
+      '</table></div>',
+    ].join('');
+  }
+  return [
+    '<section class="card">',
+    '<h2>Consumo por modelo</h2>',
+    '<p class="meta">Origem de cobrança é uma rota declarada nas configurações e aplicada ao histórico desta sessão; não é registro de transações. Mudanças passadas de modelo ou rota não são conhecidas.</p>',
+    body,
+    '</section>',
+  ].join('');
+}
+
+function renderSimulation(simulation) {
+  if (!simulation || typeof simulation !== 'object') {
+    return [
+      '<section class="card">',
+      '<h2>Simulação a preços de API</h2>',
+      '<p class="empty">Simulação indisponível nesta versão do coletor.</p>',
+      '</section>',
+    ].join('');
+  }
+  const hasBaseline = typeof simulation.baselineModel === 'string' && simulation.baselineModel !== '';
+  const hasSample = hasBaseline && Number(simulation.comparedRequests) > 0;
+  const skipped = Number(simulation.skippedRequests) > 0
+    ? ` (${formatCount(simulation.skippedRequests)} não comparadas: preços ou contadores incompletos)`
+    : '';
+  const header = [
+    `<p class="meta">Modelo de referência: ${hasBaseline ? fullModel(simulation.baselineModel) : DASH}</p>`,
+    `<p class="meta">Requisições comparadas: ${formatCount(simulation.comparedRequests)} de ${formatCount(simulation.allRequests)}${skipped}</p>`,
+  ].join('');
+  const values = hasSample
+    ? [
+        `<div class="metric"><span class="label">Modelos observados (equivalente API)</span><span class="value">${formatAmount(simulation.actualEquivalentUsd)}</span></div>`,
+        `<div class="metric"><span class="label">Mesmo volume à tarifa do modelo de referência</span><span class="value">${formatAmount(simulation.baselineEquivalentUsd)}</span></div>`,
+        `<div class="metric"><span class="label">Diferença simulada</span><span class="value">${formatSignedUsd(simulation.differenceUsd)} (${formatSignedPercent(simulation.differencePercent)})</span></div>`,
+      ].join('')
+    : '<p class="empty">Configure preços e um modelo de referência para simular.</p>';
+  return [
+    '<section class="card">',
+    '<h2>Simulação a preços de API</h2>',
+    header,
+    values,
+    '<p class="meta"><strong>Simulação, não medição:</strong> mesmo volume de tokens observado a tarifas diferentes NÃO mede como a tarefa rodaria sem o Fusion, nem economia real de assinatura ou cota. Não é valor pago nem afirmação de economia.</p>',
     '</section>',
   ].join('');
 }
@@ -323,7 +450,7 @@ function renderHistory(turns, selectedId, now) {
   const rows = turns.slice(0, TURN_LIMIT).map((turn) => {
     const selected = turn.id === selectedId;
     const last = turn.lastRequest;
-    const lastText = last ? `${escapeHtml(shortModel(last.model))} · ${formatTps(last.tps)}` : DASH;
+    const lastText = last ? `${fullModel(last.model)} · ${formatTps(last.tps)}` : DASH;
     return [
       `<tr class="${selected ? 'selected' : ''}" tabindex="0" data-action="selectTurn" data-id="${escapeHtml(turn.id)}">`,
       `<td>${formatCount(turn.index)}</td>`,
@@ -365,7 +492,7 @@ function renderRequests(turn) {
     const cells = TOKEN_KEYS.map((key) => `<td>${formatTokenValue(tokens, key)}</td>`).join('');
     return [
       '<tr>',
-      `<td>${escapeHtml(shortModel(request.model))}</td>`,
+      `<td>${fullModel(request.model)}</td>`,
       `<td>${scopeLabel(request.scope)}</td>`,
       `<td>${formatDuration(request.durationMs)}</td>`,
       `<td>${formatDuration(request.ttftMs)}</td>`,
@@ -385,7 +512,7 @@ function renderRequests(turn) {
           '<div class="scroll"><table class="requests">',
           '<thead><tr><th>Modelo</th><th>Escopo</th><th>Latência</th><th>TTFT</th><th>TPS</th>',
           `<th>${TOKEN_LABELS.input}</th><th>${TOKEN_LABELS.output}</th><th>${TOKEN_LABELS.cacheRead}</th><th>${TOKEN_LABELS.cacheWrite}</th>`,
-          '<th>Total</th><th>Custo</th></tr></thead>',
+          '<th>Volume acumulado</th><th>Equivalente de API</th></tr></thead>',
           `<tbody>${rows.join('')}</tbody>`,
           '</table></div>',
         ].join(''),
@@ -405,13 +532,17 @@ function renderSession(snapshot, mode, selectedTurnId, now) {
   const sessionTitle = session.title || '(sem título)';
   return [
     `<section class="session"><h2>${escapeHtml(sessionTitle)}</h2>`,
-    `<p class="meta">${escapeHtml(session.directory || '')} · ${escapeHtml(shortModel(session.model))}</p>`,
+    `<p class="meta">${escapeHtml(session.directory || '')}</p>`,
+    `<p class="meta">Modelo configurado da sessão: <span class="model">${fullModel(session.model)}</span> (configuração, não prova do modelo ativo)</p>`,
     warningBlock,
     renderCurrentTurn(current, now),
     renderTotals(session),
+    renderModels(session),
+    renderSimulation(session.simulation),
     renderHistory(turns, detailTurn ? detailTurn.id : null, now),
     renderRequests(detailTurn),
     '<p class="note">Métricas são atualizadas após cada requisição concluída; não há TPS de streaming exato. ',
+    'Equivalente de API e simulação são cálculos a partir de preços configurados por você; não são cobranças nem saldo de cota. ',
     'Tempo de prompt aberto é o tempo desde o envio, sem resposta final registrada. ',
     'Principal e delegada indicam o escopo da requisição. Nenhum conteúdo de prompt ou resposta é exibido ou exportado.</p>',
     '</section>',

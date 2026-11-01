@@ -2,7 +2,7 @@
   "name": "devin-pulse",
   "displayName": "Devin Pulse",
   "description": "Local Devin model, prompt timing, token usage and confirmed throughput in your editor.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "heliowap",
   "license": "MIT",
   "author": "Helio Pinheiro",
@@ -108,7 +108,43 @@
               }
             }
           },
-          "description": "Preços ESTIMADOS em USD por milhão de tokens, indexados pelo ID exato do modelo (sem correspondência por família). Não há valores padrão: modelos sem preço mostram custo indisponível, não zero. Os valores são definidos por você e podem estar desatualizados."
+          "description": "Preços de API definidos por você, em USD por milhão de tokens, indexados pelo ID exato do modelo (sem correspondência por família). Geram apenas 'equivalente de API' e simulação, não custo real nem débito de cota. Não há valores padrão: modelos sem preço mostram indisponível, não zero."
+        },
+        "devinPulse.billingSources": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "chatgpt",
+              "devin",
+              "api",
+              "unknown"
+            ]
+          },
+          "description": "Rota de cobrança DECLARADA por você para um ID exato de modelo: chatgpt (ChatGPT/OAuth), devin (cota/créditos Devin), api (API externa) ou unknown. É uma configuração informada, aplicada ao histórico da sessão; não é registro de transações. Sem valores padrão."
+        },
+        "devinPulse.openAiBilling": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "chatgpt",
+            "devin",
+            "api"
+          ],
+          "default": "unknown",
+          "enumDescriptions": [
+            "Não informada.",
+            "ChatGPT/OAuth (configuração informada).",
+            "Cota/créditos Devin (configuração informada).",
+            "API externa (configuração informada)."
+          ],
+          "description": "Rota de cobrança DECLARADA para modelos cujo ID começa com 'gpt-'. Configuração informada, não evidência de cobrança. Padrão: não informada."
+        },
+        "devinPulse.simulationModel": {
+          "type": "string",
+          "default": "",
+          "description": "ID exato de um modelo usado como referência na simulação a preços de API. Vazio desativa a simulação. A simulação reaplica tarifas configuradas ao mesmo volume observado; não mede o que aconteceria sem Fusion nem economia de assinatura ou cota."
         }
       }
     }
@@ -116,7 +152,7 @@
   "scripts": {
     "test": "node --test test/*.test.js && python3 -m unittest discover -s test -p 'test_*.py'",
     "check": "node --check src/extension.js && node --check src/bridge.js && node --check src/view.js && node --check media/panel.js",
-    "package": "vsce package --no-dependencies --out devin-pulse-0.1.0.vsix"
+    "package": "vsce package --no-dependencies --out devin-pulse-0.2.0.vsix"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.0"

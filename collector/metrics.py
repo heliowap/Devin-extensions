@@ -171,7 +171,81 @@ def walk(head: int | None, nodes: dict[int, dict], warnings: list[str]) -> list[
     return list(reversed(result))
 
 
-def summarize(session: dict, rows: list[dict], prices: dict, now: float) -> dict:
+def model_breakdown(
+    requests: list[dict], assigned: set[str], billing_sources: dict, openai_billing: str,
+) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    for request in requests:
+        groups.setdefault(request["model"], []).append(request)
+    result = []
+    for model, group in sorted(groups.items()):
+        source = billing_sources.get(
+            model, openai_billing if model.startswith("gpt-") else "unknown",
+        )
+        if source not in ("chatgpt", "devin", "api", "unknown"):
+            source = "unknown"
+        roles = {"lead": 0, "delegated": 0, "unassigned": 0}
+        for request in group:
+            role = request["scope"] if request["id"] in assigned else "unassigned"
+            roles[role] += 1
+        eligible = [
+            request for request in group
+            if request["durationMs"] is not None and request["durationMs"] > 0
+            and "output" not in request["tokens"]["unknown"]
+        ]
+        duration = sum(request["durationMs"] for request in eligible)
+        output = sum(request["tokens"]["output"] for request in eligible)
+        rate = output * 1000 / duration if duration else None
+        result.append({
+            "model": model,
+            "roleCounts": roles,
+            "billing": {
+                "source": source,
+                "basis": "declared" if source != "unknown" else "unknown",
+            },
+            "usage": usage(group),
+            "latestRequest": max(
+                group, key=lambda request: (request["finishedAt"] or 0, request["nodeId"]),
+            ),
+            "requestTps": {
+                "value": rate if rate is not None and math.isfinite(rate) else None,
+                "sampleCount": len(eligible),
+                "requests": len(group),
+            },
+        })
+    return result
+
+
+def simulate_api_equivalent(requests: list[dict], prices: dict, baseline: str) -> dict:
+    """Reprice the SAME measured tokens; never claim a no-Fusion task outcome."""
+    baseline = baseline.strip() or None
+    pairs = []
+    if baseline:
+        for request in requests:
+            reference = estimate_cost(baseline, request["tokens"], prices)
+            observed = request["costUsd"]
+            if reference is not None and observed is not None:
+                pairs.append((observed, reference))
+    observed = sum(pair[0] for pair in pairs) if pairs else None
+    reference = sum(pair[1] for pair in pairs) if pairs else None
+    difference = reference - observed if pairs else None
+    return {
+        "baselineModel": baseline,
+        "allRequests": len(requests),
+        "comparedRequests": len(pairs),
+        "skippedRequests": len(requests) - len(pairs),
+        "actualEquivalentUsd": observed,
+        "baselineEquivalentUsd": reference,
+        "differenceUsd": difference,
+        "differencePercent": difference * 100 / reference if reference else None,
+    }
+
+
+def summarize(
+    session: dict, rows: list[dict], prices: dict, now: float,
+    billing_sources: dict | None = None, openai_billing: str = "unknown",
+    simulation_model: str = "",
+) -> dict:
     nodes = {row["node_id"]: row for row in rows}
     warnings: list[str] = []
     chain = walk(session["main_chain_id"], nodes, warnings)
@@ -269,6 +343,12 @@ def summarize(session: dict, rows: list[dict], prices: dict, now: float) -> dict
         "totals": usage(list(requests.values())),
         "unassignedRequests": len(set(requests) - assigned),
         "turns": list(reversed(result_turns)),
+        "byModel": model_breakdown(
+            list(requests.values()), assigned, billing_sources or {}, openai_billing,
+        ),
+        "simulation": simulate_api_equivalent(
+            list(requests.values()), prices, simulation_model,
+        ),
     }
 
 
@@ -287,6 +367,9 @@ def snapshot(
     workspace_paths: list[str] | None = None,
     prices: dict | None = None,
     now_ms: float | None = None,
+    billing_sources: dict | None = None,
+    openai_billing: str = "unknown",
+    simulation_model: str = "",
 ) -> dict:
     """A consistent read-only snapshot. Null/unknown never means a zero bill."""
     now = now_ms if now_ms is not None else time.time() * 1000
@@ -341,7 +424,10 @@ def snapshot(
             return result
         rows = [dict(row) for row in connection.execute(NODES_SQL, (selected["id"],))]
         result["selectedSessionId"] = selected["id"]
-        result["session"] = summarize(selected, rows, prices or {}, now)
+        result["session"] = summarize(
+            selected, rows, prices or {}, now,
+            billing_sources, openai_billing, simulation_model,
+        )
         return result
     except (sqlite3.Error, ValueError, TypeError, OverflowError):
         result["source"] = {

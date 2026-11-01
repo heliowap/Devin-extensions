@@ -396,3 +396,41 @@ test('deactivate clears timers and disposes the worker', async () => {
   await new Promise((resolve) => setTimeout(resolve, 700));
   assert.equal(bridge.requests.length, requestsAtDispose);
 });
+
+test('snapshot payload carries billing routes and simulation settings', async () => {
+  const { controller, bridge } = createController({
+    pollIntervalMs: 500,
+    billingSources: { 'model-a': 'api' },
+    openAiBilling: 'chatgpt',
+    simulationModel: 'reference-model',
+  });
+  const first = controller.pollNow(true);
+  await waitFor(() => bridge.requests.length === 1, 'poll not sent');
+  const { payload } = bridge.requests[0];
+  assert.deepEqual(payload.billingSources, { 'model-a': 'api' });
+  assert.equal(payload.openAiBilling, 'chatgpt');
+  assert.equal(payload.simulationModel, 'reference-model');
+  bridge.requests[0].resolve(snapshot());
+  await first;
+});
+
+test('unset billing and simulation settings default to undeclared values', async () => {
+  const { controller, bridge } = createController({ pollIntervalMs: 500 });
+  const first = controller.pollNow(true);
+  await waitFor(() => bridge.requests.length === 1, 'poll not sent');
+  const { payload } = bridge.requests[0];
+  assert.deepEqual(payload.billingSources, {});
+  assert.equal(payload.openAiBilling, 'unknown');
+  assert.equal(payload.simulationModel, '');
+  bridge.requests[0].resolve(snapshot());
+  await first;
+});
+
+test('non-object billing sources are replaced with an empty declaration', async () => {
+  const { controller, bridge } = createController({ pollIntervalMs: 500, billingSources: ['api'] });
+  const first = controller.pollNow(true);
+  await waitFor(() => bridge.requests.length === 1, 'poll not sent');
+  assert.deepEqual(bridge.requests[0].payload.billingSources, {});
+  bridge.requests[0].resolve(snapshot());
+  await first;
+});

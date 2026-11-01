@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -184,6 +185,91 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(data["turns"], [])
         self.assertTrue(data["warnings"])
         self.assertEqual(data["unassignedRequests"], 4)
+
+    def test_repeated_cache_reads_are_volume_not_unique_context(self):
+        session = self.read()["session"]
+        # Four inferences reused 30 cached tokens each, not 120 unique tokens.
+        self.assertEqual(session["totals"]["tokens"]["cacheRead"], 120)
+        self.assertEqual(session["totals"]["tokens"]["output"], 80)
+        self.assertEqual(session["totals"]["tokens"]["total"], 400)
+
+    def test_model_breakdown_dedup_roles_and_weighted_request_rate(self):
+        slower = dict(COUNTS, output_tokens=100, total_time_ms=10000, tokens_per_sec=77)
+        self.node(8, 7, "assistant", 11, request="slow", metrics=slower)
+        self.db.execute("UPDATE sessions SET main_chain_id=8")
+        models = {m["model"]: m for m in self.read()["session"]["byModel"]}
+        lead = models["model-a"]
+        self.assertEqual(lead["usage"]["requests"], 4)
+        self.assertEqual(lead["roleCounts"], {"lead": 4, "delegated": 0, "unassigned": 0})
+        self.assertEqual(lead["latestRequest"]["tps"], 77)
+        self.assertAlmostEqual(lead["requestTps"]["value"], 160 / 13)
+        self.assertEqual(lead["requestTps"]["sampleCount"], 4)
+        self.assertEqual(models["model-b"]["roleCounts"]["delegated"], 1)
+        self.assertEqual(lead["usage"]["tokens"]["cacheRead"], 120)
+
+    def test_billing_is_declared_not_inferred_from_price_or_delegation(self):
+        self.node(8, 7, "assistant", 9, request="gpt", model="gpt-test")
+        self.db.execute("UPDATE sessions SET main_chain_id=8")
+        data = self.read(openai_billing="chatgpt", billing_sources={"model-b": "devin"})
+        models = {m["model"]: m for m in data["session"]["byModel"]}
+        self.assertEqual(models["gpt-test"]["billing"], {"source": "chatgpt", "basis": "declared"})
+        self.assertEqual(models["model-b"]["billing"]["source"], "devin")
+        self.assertEqual(models["model-a"]["billing"]["source"], "unknown")
+        self.assertIsNone(models["gpt-test"]["usage"]["costUsd"])
+        override = self.read(openai_billing="chatgpt", billing_sources={"gpt-test": "api"})
+        self.assertEqual(
+            next(m for m in override["session"]["byModel"] if m["model"] == "gpt-test")["billing"]["source"],
+            "api",
+        )
+
+    def test_api_simulation_uses_same_eligible_subset_and_all_four_categories(self):
+        prices = {
+            "model-a": dict.fromkeys(("input", "output", "cacheRead", "cacheWrite"), 1),
+            "model-b": dict.fromkeys(("input", "output", "cacheRead", "cacheWrite"), 3),
+        }
+        sim = self.read(prices=prices, simulation_model="model-a")["session"]["simulation"]
+        self.assertEqual((sim["allRequests"], sim["comparedRequests"], sim["skippedRequests"]), (4, 4, 0))
+        self.assertAlmostEqual(sim["actualEquivalentUsd"], 0.0006)
+        self.assertAlmostEqual(sim["baselineEquivalentUsd"], 0.0004)
+        self.assertAlmostEqual(sim["differenceUsd"], -0.0002)
+        self.assertAlmostEqual(sim["differencePercent"], -50)
+        partial = self.read(prices={"model-a": prices["model-a"]}, simulation_model="model-a")["session"]["simulation"]
+        self.assertEqual((partial["comparedRequests"], partial["skippedRequests"]), (3, 1))
+        self.assertEqual(partial["differenceUsd"], 0)
+
+    def test_simulation_unknown_or_zero_baseline_never_invents_percentage(self):
+        self.assertIsNone(self.read()["session"]["simulation"]["differenceUsd"])
+        rates = dict.fromkeys(("input", "output", "cacheRead", "cacheWrite"), 0)
+        sim = self.read(
+            prices={"model-a": rates, "model-b": rates}, simulation_model="model-a",
+        )["session"]["simulation"]
+        self.assertEqual(sim["comparedRequests"], 4)
+        self.assertEqual(sim["differenceUsd"], 0)
+        self.assertIsNone(sim["differencePercent"])
+
+    def test_worker_transports_billing_and_simulation_on_the_session(self):
+        self.db.commit()
+        rates = dict.fromkeys(("input", "output", "cacheRead", "cacheWrite"), 1)
+        payload = {
+            "id": 1, "action": "snapshot", "databasePath": str(self.path),
+            "billingSources": {"model-a": "api"}, "openAiBilling": "chatgpt",
+            "prices": {"model-a": rates, "model-b": rates},
+            "simulationModel": "model-a",
+        }
+        process = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / "collector/worker.py")],
+            input=json.dumps(payload) + "\n", text=True, capture_output=True,
+            check=True, timeout=5,
+        )
+        response = json.loads(process.stdout)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["id"], 1)
+        session = response["result"]["session"]
+        self.assertEqual(session["simulation"]["comparedRequests"], 4)
+        self.assertEqual(session["simulation"]["differenceUsd"], 0)
+        model = next(m for m in session["byModel"] if m["model"] == "model-a")
+        self.assertEqual(model["billing"]["source"], "api")
+        self.assertEqual(process.stderr, "")
 
 
 if __name__ == "__main__":

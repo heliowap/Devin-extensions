@@ -13,11 +13,15 @@ const MAX_POLL_MS = 60000;
 const DEFAULT_POLL_MS = 1000;
 const SAVE_ERROR_MESSAGE = 'Não foi possível salvar a sessão escolhida.';
 
+function plainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
 function readSettings() {
   const config = vscode.workspace.getConfiguration('devinPulse');
   const pollInterval = Number(config.get('pollIntervalMs', DEFAULT_POLL_MS));
-  const prices = config.get('prices', {});
   const databasePath = config.get('databasePath', '');
+  const simulationModel = config.get('simulationModel', '');
   return {
     databasePath: typeof databasePath === 'string' ? databasePath : '',
     pythonCommands: pythonCommandsFor(config.get('pythonPath', 'python3')),
@@ -25,7 +29,10 @@ function readSettings() {
       ? Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, pollInterval))
       : DEFAULT_POLL_MS,
     showStatusBar: config.get('showStatusBar', true) !== false,
-    prices: prices && typeof prices === 'object' && !Array.isArray(prices) ? prices : {},
+    prices: plainObject(config.get('prices', {})),
+    billingSources: plainObject(config.get('billingSources', {})),
+    openAiBilling: config.get('openAiBilling', 'unknown'),
+    simulationModel: typeof simulationModel === 'string' ? simulationModel : '',
   };
 }
 
@@ -132,6 +139,9 @@ class PulseController {
         sessionId: this.persistedSessionId(),
         workspacePaths: workspacePaths(),
         prices: this.settings.prices,
+        billingSources: this.settings.billingSources,
+        openAiBilling: this.settings.openAiBilling,
+        simulationModel: this.settings.simulationModel,
       });
       if (epoch === this.epoch) {
         this.setLatest({ snapshot, error: null });
